@@ -1,26 +1,58 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
+
 const http = require('http');
+const path = require('path');
+const express = require('express');
 const { Server } = require('socket.io');
-const app = require('./app');
 const connectDB = require('./config/db');
-const registerChat = require('./socket/chat');
+const authRoutes = require('./routes/authRoutes');
+const noteRoutes = require('./routes/noteRoutes');
+const registerChat = require('./sockets/chat');
+const { notFound, errorHandler } = require('./middleware/errorHandler');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+app.use('/api/auth', authRoutes);
+app.use('/api/notes', noteRoutes);
+
+app.use(notFound);
+app.use(errorHandler);
+
+registerChat(io);
 
 const PORT = process.env.PORT || 5000;
 
-if (!process.env.JWT_SECRET) {
-  console.error('JWT_SECRET is not set. Copy .env.example to .env and fill it in.');
-  process.exit(1);
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[server] port ${PORT} is already in use`);
+    process.exit(1);
+  }
+  throw err;
+});
+
+async function start() {
+  if (!process.env.JWT_SECRET) {
+    console.error('[server] JWT_SECRET is missing from .env');
+    process.exit(1);
+  }
+
+  try {
+    await connectDB(); // database first, then listen
+    server.listen(PORT, () => {
+      console.log(`[server] listening on http://localhost:${PORT}`);
+    });
+  } catch (err) {
+    console.error('[server] failed to start:', err.message);
+    process.exit(1);
+  }
 }
 
-const server = http.createServer(app);
-const io = new Server(server);
-registerChat(io);
+start();
 
-connectDB()
-  .then(() => {
-    server.listen(PORT, () => console.log(`[server] listening on http://localhost:${PORT}`));
-  })
-  .catch((err) => {
-    console.error('[db] connection failed:', err.message);
-    process.exit(1);
-  });
+module.exports = { app, server, io };

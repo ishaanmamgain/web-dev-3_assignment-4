@@ -1,10 +1,17 @@
+const dns = require('dns');
 const mongoose = require('mongoose');
 
-const connectDB = async (uri = process.env.MONGO_URI) => {
-  if (!uri) throw new Error('MONGO_URI is not set. Copy .env.example to .env first.');
-  const conn = await mongoose.connect(uri);
-  console.log(`[db] MongoDB connected: ${conn.connection.host}/${conn.connection.name}`);
-  return conn;
-};
+// Some Windows setups point Node's own resolver at 127.0.0.1 (no DNS server),
+// which breaks mongodb+srv:// lookups even though Windows resolves fine.
+// DNS_SERVERS lets us override it without touching system settings.
+if (process.env.DNS_SERVERS) {
+  dns.setServers(process.env.DNS_SERVERS.split(',').map((s) => s.trim()).filter(Boolean));
+}
+
+// Connect once at boot; fail fast so we never listen without a database.
+async function connectDB() {
+  await mongoose.connect(process.env.MONGO_URI);
+  console.log('MongoDB connected');
+}
 
 module.exports = connectDB;

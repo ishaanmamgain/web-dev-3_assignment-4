@@ -1,41 +1,35 @@
-const notFound = (req, res, next) => {
-  res.status(404).json({ message: `Route not found: ${req.method} ${req.originalUrl}` });
-};
+// Wraps async handlers so rejected promises reach the error handler.
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
 
-// Centralized error handler — maps Mongoose / JSON errors to clean HTTP responses
-// eslint-disable-next-line no-unused-vars
-const errorHandler = (err, req, res, next) => {
-  let status = err.statusCode || 500;
-  let message = err.message || 'Internal Server Error';
-  let details = err.details;
+const notFound = (req, res) => res.status(404).json({ message: 'Route not found' });
+
+// Central error handler: always responds with { message }.
+function errorHandler(err, req, res, next) {
+  if (res.headersSent) return next(err);
 
   if (err.name === 'ValidationError') {
-    status = 400;
-    message = 'Validation failed';
-    details = Object.values(err.errors).map((e) => ({ field: e.path, message: e.message }));
-  } else if (err.name === 'CastError') {
-    status = 400;
-    message = `Invalid value for ${err.path}: ${JSON.stringify(err.value)}`;
-  } else if (err.code === 11000) {
-    status = 409;
-    const field =
-      Object.keys(err.keyValue || err.keyPattern || {})[0] ||
-      (String(err.message).match(/index: (\w+?)_1/) || [])[1] ||
-      'value';
-    const value = err.keyValue?.[field];
-    message = value !== undefined ? `Duplicate ${field}: "${value}" already exists` : `A product with this ${field} already exists`;
-  } else if (err.type === 'entity.parse.failed') {
-    status = 400;
-    message = 'Malformed JSON in request body';
+    const message = Object.values(err.errors).map((e) => e.message).join(', ');
+    return res.status(400).json({ message });
   }
 
-  if (status >= 500) console.error('[error]', err);
+  if (err.code === 11000) {
+    const field = Object.keys(err.keyPattern || {})[0] || 'value';
+    return res.status(409).json({ message: `${field} already exists` });
+  }
 
-  res.status(status).json({
-    message,
-    ...(details && { details }),
-    ...(process.env.NODE_ENV === 'development' && status >= 500 && { stack: err.stack }),
-  });
-};
+  if (err.name === 'CastError') {
+    return res.status(400).json({ message: `Invalid ${err.path}` });
+  }
 
-module.exports = { notFound, errorHandler };
+  if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+    return res.status(401).json({ message: 'Invalid or expired token' });
+  }
+
+  const status = err.status || 500;
+  const message = status === 500 ? 'Internal server error' : err.message;
+  if (status === 500) console.error(err);
+  return res.status(status).json({ message });
+}
+
+module.exports = { asyncHandler, notFound, errorHandler };

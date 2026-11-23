@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Secure Connect - Chat Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 32px auto; padding: 0 16px; }
+    fieldset { border: 1px solid #ccc; border-radius: 8px; margin-bottom: 16px; padding: 12px; }
+    input, button { font: inherit; padding: 6px 8px; margin: 4px 4px 4px 0; }
+    #log { border: 1px solid #ccc; border-radius: 8px; height: 320px; overflow-y: auto; padding: 8px; background: #fafafa; }
+    #log p { margin: 4px 0; }
+    .system { color: #666; font-style: italic; }
+    .me { color: #0a6; }
+    small { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Secure Connect &mdash; Chat Test</h1>
+  <p><small>Open this page in two tabs, log in as two users, and chat in <code>general</code>.</small></p>
+
+  <fieldset>
+    <legend>1. Auth</legend>
+    <input id="email" type="email" placeholder="email" />
+    <input id="password" type="password" placeholder="password (min 6)" />
+    <input id="username" placeholder="username (signup only)" />
+    <button id="signup">Sign up</button>
+    <button id="login">Log in</button>
+    <button id="logout">Log out</button>
+    <div id="who"><small>Not logged in</small></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Room</legend>
+    <input id="room" value="general" />
+    <button id="join">Join room</button>
+    <button id="leave">Leave room</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Messages</legend>
+    <div id="log"></div>
+    <input id="message" placeholder="type a message" style="width: 70%" />
+    <button id="send">Send</button>
+  </fieldset>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const log = (text, cls = '') => {
+      const p = document.createElement('p');
+      p.textContent = text;
+      if (cls) p.className = cls;
+      $('log').appendChild(p);
+      $('log').scrollTop = $('log').scrollHeight;
+    };
+
+    let socket = null;
+    let me = null;
+
+    function setUser(payload) {
+      me = payload;
+      localStorage.setItem('user', JSON.stringify(payload));
+      $('who').innerHTML = '<small>Logged in as <b>' + payload.username + '</b> (' + payload.role + ')</small>';
+    }
+
+    async function api(path, body, token) {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { Authorization: 'Bearer ' + token } : {}),
+        body: JSON.stringify(body || {})
+      });
+      return { ok: res.ok, data: await res.json() };
+    }
+
+    $('signup').onclick = async () => {
+      const { ok, data } = await api('/api/auth/signup', {
+        username: $('username').value.trim(),
+        email: $('email').value.trim(),
+        password: $('password').value
+      });
+      log(ok ? 'Signed up: ' + data.username : 'Signup failed: ' + data.message, 'system');
+    };
+
+    $('login').onclick = async () => {
+      const { ok, data } = await api('/api/auth/login', {
+        email: $('email').value.trim(),
+        password: $('password').value
+      });
+      if (!ok) return log('Login failed: ' + data.message, 'system');
+
+      localStorage.setItem('token', data.token);
+      const profile = await fetch('/api/auth/profile', {
+        headers: { Authorization: 'Bearer ' + data.token }
+      }).then((r) => r.json());
+
+      setUser(profile);
+      log('Logged in as ' + profile.username, 'system');
+      connect();
+    };
+
+    $('logout').onclick = () => {
+      if (socket) socket.disconnect();
+      socket = null;
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      me = null;
+      $('who').innerHTML = '<small>Not logged in</small>';
+      log('Logged out', 'system');
+    };
+
+    function connect() {
+      const token = localStorage.getItem('token');
+      if (!token) return log('Log in first', 'system');
+      if (socket) socket.disconnect();
+
+      socket = io({ auth: { token } });
+
+      socket.on('connect', () => {
+        log('Socket connected: ' + socket.id, 'system');
+        socket.emit('joinRoom', $('room').value.trim() || 'general');
+      });
+      socket.on('connect_error', (err) => log('Socket error: ' + err.message, 'system'));
+      socket.on('systemMessage', (m) => log('• ' + m.message, 'system'));
+      socket.on('chatMessage', (m) => {
+        const mine = me && m.user === me.username;
+        log('[' + m.room + '] ' + m.user + ': ' + m.message, mine ? 'me' : '');
+      });
+      socket.on('disconnect', () => log('Socket disconnected', 'system'));
+    }
+
+    $('join').onclick = () => {
+      if (!socket) return log('Log in first', 'system');
+      socket.emit('joinRoom', $('room').value.trim() || 'general');
+    };
+
+    $('leave').onclick = () => {
+      if (!socket) return;
+      socket.emit('leaveRoom', $('room').value.trim() || 'general');
+    };
+
+    $('send').onclick = () => {
+      const message = $('message').value.trim();
+      if (!socket || !message) return;
+      socket.emit('chatMessage', { room: $('room').value.trim() || 'general', message });
+      $('message').value = '';
+    };
+
+    $('message').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('send').click(); });
+
+    // Restore session on reload.
+    const savedToken = localStorage.getItem('token');
+    const savedUser = localStorage.getItem('user');
+    if (savedToken && savedUser) {
+      setUser(JSON.parse(savedUser));
+      connect();
+    }
+  </script>
+</body>
+</html>
